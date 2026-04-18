@@ -1,1 +1,373 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Condensé Temps par Agent</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #F7F6F2; --surface: #FFFFFF; --surface2: #F0EEE8;
+    --border: #E2DFD8; --text: #1A1916; --text2: #6B6860; --text3: #A8A49C;
+    --accent: #2D5BE3; --radius: 10px; --radius-sm: 6px;
+  }
+  body { font-family: -apple-system,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:14px; font-size:14px; line-height:1.5; }
 
+  /* HEADER */
+  .header { margin-bottom:14px; }
+  .header h1 { font-size:17px; font-weight:600; letter-spacing:-0.3px; }
+  .header p { font-size:12px; color:var(--text2); margin-top:2px; }
+
+  /* STATS */
+  .stats-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; margin-bottom:14px; }
+  .stat-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; }
+  .stat-card .lbl { font-size:10px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:.5px; margin-bottom:3px; }
+  .stat-card .val { font-size:20px; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; }
+  .stat-card .sub { font-size:11px; color:var(--text2); margin-top:2px; }
+
+  /* FILTER BAR */
+  .filter-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+  .filter-bar .lbl { font-size:10px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:.5px; }
+  .pill { padding:4px 11px; border-radius:20px; font-size:12px; font-weight:500; cursor:pointer; border:1px solid var(--border); background:var(--surface); color:var(--text2); transition:all .15s; white-space:nowrap; }
+  .pill:hover { border-color:var(--accent); color:var(--accent); }
+  .pill.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  /* AGENT CARDS */
+  .agent-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; margin-bottom:7px; }
+  .agent-header { display:flex; align-items:center; justify-content:space-between; padding:11px 13px; cursor:pointer; gap:10px; transition:background .12s; }
+  .agent-header:hover { background:var(--surface2); }
+  .agent-left { display:flex; align-items:center; gap:9px; flex:1; min-width:0; }
+  .avatar { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; }
+  .agent-name { font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .agent-meta { font-size:11px; color:var(--text3); }
+  .agent-right { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+  .agent-total { font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .agent-pct { font-size:10px; color:var(--text3); text-align:right; }
+  .chev { font-size:10px; color:var(--text3); transition:transform .2s; }
+  .chev.open { transform:rotate(180deg); }
+
+  /* DETAIL */
+  .detail { display:none; border-top:1px solid var(--border); }
+  .detail.open { display:block; }
+  .detail-inner { padding:12px 13px; }
+
+  /* PROG TABS */
+  .prog-tabs { display:flex; background:var(--surface2); border-bottom:1px solid var(--border); }
+  .prog-tab { font-size:11px; font-weight:500; padding:7px 12px; cursor:pointer; color:var(--text2); border-bottom:2px solid transparent; margin-bottom:-1px; transition:all .15s; }
+  .prog-tab:hover { color:var(--accent); }
+  .prog-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+  /* YEAR CHIPS */
+  .year-chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .year-chip { background:var(--surface2); border-radius:var(--radius-sm); padding:6px 10px; min-width:80px; text-align:center; }
+  .year-chip .y-lbl { font-size:10px; color:var(--text3); font-weight:600; text-transform:uppercase; }
+  .year-chip .y-val { font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; }
+
+  /* MONTH TABLE */
+  .mtable { width:100%; border-collapse:collapse; font-size:12px; }
+  .mtable th { color:var(--text3); font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.4px; padding:2px 5px 6px; border-bottom:1px solid var(--border); text-align:left; }
+  .mtable td { padding:4px 5px; border-bottom:1px solid var(--border); }
+  .mtable tr:last-child td { border-bottom:none; }
+  .mtable tr:hover td { background:var(--surface2); }
+  .bar-wrap { display:flex; align-items:center; gap:7px; }
+  .bar-track { flex:1; height:3px; background:var(--surface2); border-radius:2px; overflow:hidden; min-width:50px; }
+  .bar-fill { height:100%; border-radius:2px; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; min-width:52px; }
+
+  /* BUTTONS */
+  .btn { display:inline-block; padding:7px 16px; background:var(--accent); color:#fff; border-radius:var(--radius-sm); font-size:12px; font-weight:600; cursor:pointer; border:none; }
+  .btn:hover { opacity:.85; }
+  .btn-ghost { background:var(--surface2); color:var(--text); border:1px solid var(--border); }
+  .icon-btn { font-size:11px; padding:4px 10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--surface); color:var(--text2); cursor:pointer; }
+  .icon-btn:hover { background:var(--surface2); }
+
+  /* CONFIG */
+  .config-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; }
+  .config-panel h3 { font-size:13px; font-weight:600; margin-bottom:10px; }
+  .table-chips { display:flex; flex-wrap:wrap; gap:6px; min-height:28px; }
+  .table-chip { display:flex; align-items:center; gap:5px; background:var(--surface2); border:1px solid var(--border); border-radius:5px; padding:3px 8px; font-size:11px; font-weight:500; }
+  .table-chip .rm { cursor:pointer; color:var(--text3); font-size:14px; line-height:1; }
+  .table-chip .rm:hover { color:#c53030; }
+  .add-row { display:flex; gap:7px; margin-top:10px; }
+  .add-row select { flex:1; padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius-sm); font-size:12px; background:var(--bg); color:var(--text); }
+  .hint { font-size:11px; color:var(--text3); margin-top:10px; line-height:1.6; }
+  .hint code { background:var(--surface2); border:1px solid var(--border); padding:1px 4px; border-radius:3px; font-family:monospace; }
+
+  /* STATE BOXES */
+  .state-box { text-align:center; padding:44px 20px; }
+  .state-box .ico { font-size:28px; margin-bottom:10px; }
+  .state-box h2 { font-size:15px; font-weight:600; margin-bottom:6px; }
+  .state-box p { font-size:12px; line-height:1.6; color:var(--text2); max-width:300px; margin:0 auto 12px; }
+</style>
+</head>
+<body>
+<div id="app"><div class="state-box"><div class="ico">⏳</div><h2>Connexion à Grist…</h2></div></div>
+
+<script>
+// ── PALETTE ─────────────────────────────────────────────────────────────────
+const PAL=[
+  {bg:'#EBF0FD',tx:'#1D3EA8',fi:'#2D5BE3'},
+  {bg:'#E6F4ED',tx:'#145C35',fi:'#1A7A4A'},
+  {bg:'#FEF3C7',tx:'#92400E',fi:'#D97706'},
+  {bg:'#FCE7F3',tx:'#831843',fi:'#DB2777'},
+  {bg:'#F3E8FF',tx:'#5B21B6',fi:'#7C3AED'},
+  {bg:'#ECFDF5',tx:'#064E3B',fi:'#059669'},
+  {bg:'#FFF7ED',tx:'#7C2D12',fi:'#EA580C'},
+];
+const pc=i=>PAL[i%PAL.length];
+const ini=n=>n.trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase();
+const fmt=v=>(+v).toFixed(3);
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const MONTH_RE=/jan|fév|fev|mar|avr|mai|juin|juil|ao[uû]t|sep|oct|nov|déc|dec/i;
+
+// ── STATE ────────────────────────────────────────────────────────────────────
+const S={
+  tables:[],        // tableIds configured by user
+  allTables:[],     // all tables in doc
+  agents:[],        // [{name, tableId, programs:[{prog, months:[{date,val}]}]}]
+  programs:[],      // distinct program names
+  filter:null,
+  openAgent:null,
+  openTab:{},
+  sortBy:'value',
+};
+
+// ── GRIST INIT ───────────────────────────────────────────────────────────────
+grist.ready({ requiredAccess: 'read table' });
+
+grist.onOptions(opts=>{
+  if (opts && Array.isArray(opts.tables)) {
+    S.tables = opts.tables;
+    loadAll();
+  }
+});
+
+async function fetchAllTableIds(){
+  try { S.allTables = await grist.docApi.listTables(); }
+  catch(e){ S.allTables=[]; }
+}
+
+// ── LOAD & PARSE ─────────────────────────────────────────────────────────────
+async function loadAll(){
+  if(!S.tables.length){ await fetchAllTableIds(); return renderConfig(); }
+  showLoading();
+  const agents=[], errs=[];
+  for(const tid of S.tables){
+    try{
+      const data = await grist.docApi.fetchTable(tid);
+      const a = parseTable(tid, data);
+      if(a) agents.push(a); else errs.push(`${tid}: structure non reconnue`);
+    }catch(e){ errs.push(`${tid}: ${e.message||e}`); }
+  }
+  S.agents=agents;
+  if(!agents.length){
+    return showError(errs.join('<br>')||'Aucune donnée lisible dans les tables sélectionnées.');
+  }
+  S.programs=[...new Set(agents.flatMap(a=>a.programs.map(p=>p.prog)))];
+  if(!S.filter||!S.programs.includes(S.filter)) S.filter=S.programs[0]||null;
+  S.openAgent=null; S.openTab={};
+  render();
+}
+
+function parseTable(tableId, data){
+  // data = { id:[...], colId:[...], ... }
+  const colIds = Object.keys(data).filter(k=>k!=='id'&&k!=='manualSort');
+  if(!colIds.length) return null;
+  const nRows = data[colIds[0]].length;
+  if(!nRows) return null;
+
+  // Detect date column: most values matching a month name
+  let dateCol=null, bestScore=0;
+  for(const col of colIds){
+    let score=0;
+    for(const v of data[col]) if(typeof v==='string'&&MONTH_RE.test(v)) score++;
+    if(score>bestScore){ bestScore=score; dateCol=col; }
+  }
+  if(!dateCol||bestScore===0) return null;
+
+  // Numeric (program) columns: at least one non-zero value
+  const progCols = colIds.filter(col=>{
+    if(col===dateCol) return false;
+    return data[col].some(v=>typeof v==='number'&&v!==0&&!isNaN(v));
+  });
+  if(!progCols.length) return null;
+
+  // Filter data rows: must have a month name, exclude "Total" rows
+  const programs = progCols.map(col=>{
+    const months=[];
+    for(let i=0;i<nRows;i++){
+      const d=data[dateCol][i];
+      if(!d||typeof d!=='string') continue;
+      if(/^\s*total\s*$/i.test(d.trim())) continue;
+      if(!MONTH_RE.test(d)) continue;
+      const val=data[col][i];
+      if(typeof val==='number'&&val!==0&&!isNaN(val))
+        months.push({date:d.trim(), val});
+    }
+    // Column label: clean up underscore/camelCase
+    const prog = col.replace(/_/g,' ').trim();
+    return {prog, months};
+  });
+
+  const agentName = tableId.replace(/_/g,' ').trim();
+  return {name:agentName, tableId, programs};
+}
+
+// ── COMPUTED ─────────────────────────────────────────────────────────────────
+const agentTotal=(ag,p)=>p
+  ? (ag.programs.find(x=>x.prog===p)||{months:[]}).months.reduce((s,m)=>s+m.val,0)
+  : ag.programs.reduce((s,p)=>s+p.months.reduce((a,m)=>a+m.val,0),0);
+const grandTotal=p=>S.agents.reduce((s,a)=>s+agentTotal(a,p),0);
+const yearBreak=months=>{
+  const m={};
+  for(const{date,val}of months){ const y=(date.match(/\d{4}/)||['?'])[0]; m[y]=(m[y]||0)+val; }
+  return m;
+};
+
+// ── RENDER DASHBOARD ─────────────────────────────────────────────────────────
+function render(){
+  const gt=grandTotal(S.filter);
+  const sorted=[...S.agents].sort((a,b)=>
+    S.sortBy==='name'?a.name.localeCompare(b.name):agentTotal(b,S.filter)-agentTotal(a,S.filter)
+  );
+  const top=sorted[0];
+
+  const stats=`<div class="stats-row">
+    <div class="stat-card"><div class="lbl">Total équipe</div><div class="val">${fmt(gt)}</div><div class="sub">personnes/mois</div></div>
+    <div class="stat-card"><div class="lbl">Agents</div><div class="val">${S.agents.length}</div><div class="sub">${S.programs.length} programme${S.programs.length>1?'s':''}</div></div>
+    <div class="stat-card"><div class="lbl">Top contributeur</div><div class="val" style="font-size:13px;padding-top:3px;font-weight:600">${esc(top.name)}</div><div class="sub">${fmt(agentTotal(top,S.filter))} p/m</div></div>
+  </div>`;
+
+  const filters=`<div class="filter-bar">
+    <span class="lbl">Programme :</span>
+    ${S.programs.map(p=>`<span class="pill${S.filter===p?' active':''}" onclick="setFilter('${esc(p)}')">${esc(p)}</span>`).join('')}
+    ${S.programs.length>1?`<span class="pill${!S.filter?' active':''}" onclick="setFilter(null)">Tous</span>`:''}
+    <button class="icon-btn" style="margin-left:auto" onclick="loadAll()">⟳</button>
+    <button class="icon-btn" onclick="openConfig()">⚙ Tables</button>
+  </div>`;
+
+  const sortBar=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+    <span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Tri :</span>
+    <span class="pill${S.sortBy==='value'?' active':''}" style="font-size:11px;padding:3px 9px" onclick="setSort('value')">Valeur ↓</span>
+    <span class="pill${S.sortBy==='name'?' active':''}" style="font-size:11px;padding:3px 9px" onclick="setSort('name')">Nom A→Z</span>
+  </div>`;
+
+  const agentsHtml=sorted.map(ag=>{
+    const oi=S.agents.indexOf(ag);
+    const c=pc(oi);
+    const total=agentTotal(ag,S.filter);
+    const pct=gt>0?Math.round(total/gt*100):0;
+    const isOpen=S.openAgent===oi;
+
+    let detail='';
+    if(isOpen){
+      const visProgs=S.filter?ag.programs.filter(p=>p.prog===S.filter):ag.programs;
+      const cur=S.openTab[oi]||visProgs[0]?.prog;
+      const tabs=visProgs.length>1?`<div class="prog-tabs">${visProgs.map(p=>`<span class="prog-tab${cur===p.prog?' active':''}" onclick="setTab(${oi},'${esc(p.prog)}')">${esc(p.prog)}</span>`).join('')}</div>`:'';
+      const prog=visProgs.find(p=>p.prog===cur)||visProgs[0];
+      let inner='<p style="font-size:12px;color:var(--text3);padding:6px 0">Aucune donnée.</p>';
+      if(prog&&prog.months.length){
+        const maxV=Math.max(...prog.months.map(m=>m.val));
+        const yrs=yearBreak(prog.months);
+        inner=`<div class="year-chips">${Object.entries(yrs).map(([y,v])=>`<div class="year-chip"><div class="y-lbl">${y}</div><div class="y-val">${fmt(v)}</div></div>`).join('')}</div>
+        <table class="mtable"><thead><tr><th>Mois</th><th>p/m</th></tr></thead><tbody>
+          ${prog.months.map(m=>`<tr><td>${esc(m.date)}</td><td><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:${maxV>0?Math.round(m.val/maxV*100):0}%;background:${c.fi}"></div></div><span class="num">${fmt(m.val)}</span></div></td></tr>`).join('')}
+        </tbody></table>`;
+      }
+      detail=`<div class="detail open">${tabs}<div class="detail-inner">${inner}</div></div>`;
+    }
+
+    return `<div class="agent-card">
+      <div class="agent-header" onclick="toggleAgent(${oi})">
+        <div class="agent-left">
+          <div class="avatar" style="background:${c.bg};color:${c.tx}">${ini(ag.name)}</div>
+          <div>
+            <div class="agent-name">${esc(ag.name)}</div>
+            <div class="agent-meta">${ag.programs.length} prog. · <code style="font-size:10px;background:var(--surface2);padding:0 3px;border-radius:3px">${esc(ag.tableId)}</code></div>
+          </div>
+        </div>
+        <div class="agent-right">
+          <div style="text-align:right">
+            <div class="agent-total" style="color:${c.fi}">${fmt(total)} <span style="font-size:10px;font-weight:400;color:var(--text2)">p/m</span></div>
+            <div class="agent-pct">${pct}% du total</div>
+          </div>
+          <span class="chev${isOpen?' open':''}">▼</span>
+        </div>
+      </div>${detail}
+    </div>`;
+  }).join('');
+
+  document.getElementById('app').innerHTML=`
+    <div class="header"><h1>Condensé — Temps par agent</h1><p>${S.agents.length} table${S.agents.length>1?'s':''} · personnes/mois · ${S.filter||'tous programmes'}</p></div>
+    ${stats}${filters}${sortBar}
+    <div>${agentsHtml}</div>`;
+}
+
+// ── CONFIG PANEL ─────────────────────────────────────────────────────────────
+async function openConfig(){
+  await fetchAllTableIds();
+  renderConfig();
+}
+
+function renderConfig(){
+  const avail=S.allTables.filter(t=>!S.tables.includes(t));
+  document.getElementById('app').innerHTML=`
+    <div class="header"><h1>Configuration</h1><p>Sélectionnez les tables Grist à inclure — une table = un agent.</p></div>
+    <div class="config-panel">
+      <h3>Tables sélectionnées</h3>
+      <div class="table-chips" id="chips">
+        ${S.tables.length
+          ? S.tables.map(t=>`<div class="table-chip"><span>${esc(t)}</span><span class="rm" onclick="removeTable('${esc(t)}')">×</span></div>`).join('')
+          : '<span style="font-size:12px;color:var(--text3);padding:4px 0">Aucune table — ajoutez-en ci-dessous</span>'}
+      </div>
+      <div class="add-row">
+        <select id="sel">
+          <option value="">— Choisir une table —</option>
+          ${avail.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+          ${!avail.length&&S.allTables.length?'<option disabled>Toutes les tables sont déjà ajoutées</option>':''}
+          ${!S.allTables.length?'<option disabled>Impossible de lister les tables</option>':''}
+        </select>
+        <button class="btn" onclick="addTable()">Ajouter</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn" onclick="saveAndLoad()">✓ Enregistrer &amp; charger</button>
+        ${S.agents.length?`<button class="btn btn-ghost" onclick="render()">Annuler</button>`:''}
+      </div>
+      <p class="hint">
+        Structure attendue dans chaque table :<br>
+        • une colonne contenant les mois (ex: <code>Janvier 2024</code>)<br>
+        • une ou plusieurs colonnes numériques = programmes (ex: <code>Giant Leaps</code>)<br>
+        • la ligne <code>Total</code> est automatiquement ignorée
+      </p>
+    </div>`;
+}
+
+function addTable(){
+  const v=document.getElementById('sel').value;
+  if(v&&!S.tables.includes(v)){ S.tables.push(v); renderConfig(); }
+}
+function removeTable(t){ S.tables=S.tables.filter(x=>x!==t); renderConfig(); }
+async function saveAndLoad(){
+  try{ await grist.setOptions({tables:S.tables}); }catch(e){}
+  loadAll();
+}
+
+// ── ACTIONS ───────────────────────────────────────────────────────────────────
+function toggleAgent(i){ S.openAgent=S.openAgent===i?null:i; render(); }
+function setFilter(p){ S.filter=p; S.openAgent=null; render(); }
+function setSort(s){ S.sortBy=s; render(); }
+function setTab(ai,p){ S.openTab[ai]=p; render(); }
+
+function showLoading(){
+  document.getElementById('app').innerHTML=`<div class="state-box"><div class="ico">⏳</div><h2>Chargement…</h2><p>${S.tables.map(esc).join(', ')}</p></div>`;
+}
+function showError(msg){
+  document.getElementById('app').innerHTML=`<div class="state-box"><div class="ico">⚠️</div><h2>Erreur de lecture</h2><p>${msg}</p><button class="btn" onclick="openConfig()">⚙ Reconfigurer</button></div>`;
+}
+
+// ── BOOT ──────────────────────────────────────────────────────────────────────
+(async()=>{ await fetchAllTableIds(); if(!S.tables.length) renderConfig(); })();
+</script>
+</body>
+</html>
