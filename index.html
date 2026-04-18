@@ -186,12 +186,26 @@ function parseTable(tableId, data){
   }
   if(!dateCol||bestScore===0) return null;
 
-  // Numeric (program) columns: at least one non-zero value
+  // Identify "Total autres activités" and "Total absence" columns by name pattern
+  // — they will be merged into a single "Total autres" synthetic column
+  const AUTRES_RE = /autres.activit|autres_activit/i;
+  const ABSENCE_RE = /absence/i;
+  const TRAVAILLE_RE = /travail/i;
+
+  const autresCol   = colIds.find(c=>AUTRES_RE.test(c));
+  const absenceCol  = colIds.find(c=>ABSENCE_RE.test(c));
+  const travailleCol= colIds.find(c=>TRAVAILLE_RE.test(c));
+  const reserved    = new Set([dateCol, autresCol, absenceCol, travailleCol].filter(Boolean));
+
+  // Program columns = numeric, not reserved
   const progCols = colIds.filter(col=>{
-    if(col===dateCol) return false;
+    if(reserved.has(col)) return false;
     return data[col].some(v=>typeof v==='number'&&v!==0&&!isNaN(v));
   });
   if(!progCols.length) return null;
+
+  // Helper: get valid numeric value at row i for a column (or 0)
+  const numAt=(col,i)=>(col&&typeof data[col][i]==='number'&&!isNaN(data[col][i]))?data[col][i]:0;
 
   // Filter data rows: must have a month name, exclude "Total" rows
   const programs = progCols.map(col=>{
@@ -205,10 +219,23 @@ function parseTable(tableId, data){
       if(typeof val==='number'&&val!==0&&!isNaN(val))
         months.push({date:d.trim(), val});
     }
-    // Column label: clean up underscore/camelCase
     const prog = col.replace(/_/g,' ').trim();
     return {prog, months};
   });
+
+  // Build the merged "Total autres" program (autres activités + absence)
+  if(autresCol||absenceCol){
+    const autresMonths=[];
+    for(let i=0;i<nRows;i++){
+      const d=data[dateCol][i];
+      if(!d||typeof d!=='string') continue;
+      if(/^\s*total\s*$/i.test(d.trim())) continue;
+      if(!MONTH_RE.test(d)) continue;
+      const val=numAt(autresCol,i)+numAt(absenceCol,i);
+      if(val!==0) autresMonths.push({date:d.trim(), val});
+    }
+    if(autresMonths.length) programs.push({prog:'Total autres', months:autresMonths});
+  }
 
   const agentName = tableId.replace(/_/g,' ').trim();
   return {name:agentName, tableId, programs};
