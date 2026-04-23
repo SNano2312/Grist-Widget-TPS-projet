@@ -164,40 +164,50 @@ async function loadPrevue(){
   S.prevue = {};
   try {
     const data = await grist.docApi.fetchTable('Temps_prevue');
-    // Grist renvoie les colonnes avec leurs vrais IDs (ex: "Giant_Leaps")
-    // On filtre id, manualSort, et toute colonne interne Grist (préfixe "gristHelper_")
     const colIds = Object.keys(data).filter(k=>
       k!=='id' && k!=='manualSort' && !k.startsWith('gristHelper_')
     );
     if(!colIds.length) return;
     const nRows = data[colIds[0]].length;
+    if(nRows < 2) return;
 
-    // Colonne A = noms agents (première colonne)
+    // Colonne A = noms agents
     const agentCol = colIds[0];
-    // Colonnes B+ = activités (ID brut Grist → valeur prévue)
+    // Colonnes B, C, ... : la ligne 0 (index 0) contient le NOM de l'activité
+    // les lignes suivantes contiennent les valeurs par agent
     const activCols = colIds.slice(1);
 
-    for(let i=0; i<nRows; i++){
+    // Ligne 0 = en-têtes des activités (noms réels)
+    // On construit un mapping colId → nom d'activité normalisé
+    const colToActivite = {};
+    for(const col of activCols){
+      const header = data[col][0];
+      if(header && String(header).trim()){
+        colToActivite[col] = String(header).trim();
+      }
+    }
+
+    // Lignes 1+ = données agents
+    for(let i=1; i<nRows; i++){
       const agentRaw = data[agentCol][i];
-      // Grist peut retourner null ou une string vide
       if(!agentRaw) continue;
       const agentName = String(agentRaw).trim();
       if(!agentName) continue;
 
       let totalPrevue = 0;
-      // On stocke { [colIdBrut]: valeur } pour matcher directement avec parseTable
-      const byColId = {};
+      // On stocke { [nomActiviteNorm]: valeur } pour matcher avec prog.prog
+      const byActivite = {};
       for(const col of activCols){
+        const activName = colToActivite[col];
+        if(!activName) continue;
         const raw = data[col][i];
-        // Grist peut envoyer null, '', ou un nombre
         const num = (raw !== null && raw !== '' && !isNaN(Number(raw))) ? Number(raw) : 0;
-        byColId[col] = num;
+        byActivite[norm(activName)] = (byActivite[norm(activName)]||0) + num;
         totalPrevue += num;
       }
-      S.prevue[agentName] = { _byColId: byColId, _total: totalPrevue };
+      S.prevue[agentName] = { _byActivite: byActivite, _total: totalPrevue };
     }
   } catch(e) {
-    // Table optionnelle — silence si absente
     console.warn('Temps_prevue non trouvée ou erreur:', e);
   }
 }
@@ -324,29 +334,26 @@ function getPrevue(agentName){
 function realiseParLabel(ag){
   const map={};
   for(const prog of ag.programs){
-    const lbl=norm(prog.colId); // colId brut → label normalisé
-    const total=prog.months.reduce((s,m)=>s+m.val,0);
-    map[lbl]=(map[lbl]||0)+total;
+    const lbl=norm(prog.prog); // prog.prog = label affiché (ex: "Giant Leaps")
+    map[lbl]=(map[lbl]||0)+prog.months.reduce((s,m)=>s+m.val,0);
   }
   return map;
 }
 
 // Retourne le détail solde par activité + total
-// { items:[{label, prevu, realise, solde}], totalPrevu, totalRealise, totalSolde }
 function resteDetail(ag){
   const prevData=getPrevue(ag.name);
   if(!prevData) return null;
-  // realMap est indexé par label normalisé du colId de la table agent
   const realMap=realiseParLabel(ag);
   const items=[];
   let totalPrevu=0, totalRealise=0;
 
-  for(const [colId, prevu] of Object.entries(prevData._byColId)){
-    // On cherche dans realMap avec le label normalisé du colId de Temps_prevue
-    const lbl=norm(colId);
-    const realise=realMap[lbl]||0;
+  for(const [activNorm, prevu] of Object.entries(prevData._byActivite)){
+    const realise=realMap[activNorm]||0;
     const solde=prevu-realise;
-    const display=colId.replace(/_/g,' ').trim();
+    // Retrouver le label original (non normalisé) depuis les programmes de l'agent
+    const progMatch=ag.programs.find(p=>norm(p.prog)===activNorm);
+    const display=progMatch?progMatch.prog:activNorm;
     items.push({label:display, prevu, realise, solde});
     totalPrevu+=prevu;
     totalRealise+=realise;
@@ -559,9 +566,9 @@ function toggleDebug(){
   for(const [agName, pData] of Object.entries(S.prevue)){
     out+=`\nAgent: "${agName}" (normalisé: "${norm(agName)}")\n`;
     out+=`  _total: ${pData._total}\n`;
-    out+='  colIds prévus:\n';
-    for(const [colId, val] of Object.entries(pData._byColId)){
-      out+=`    "${colId}"  →  norm="${norm(colId)}"  val=${val}\n`;
+    out+='  activités prévues (nom normalisé → valeur):\n';
+    for(const [activNorm, val] of Object.entries(pData._byActivite)){
+      out+=`    "${activNorm}"  val=${val}\n`;
     }
   }
 
@@ -579,12 +586,11 @@ function toggleDebug(){
     if(prevData){
       const realMap={};
       for(const prog of ag.programs){
-        realMap[norm(prog.colId)]=(realMap[norm(prog.colId)]||0)+prog.months.reduce((s,m)=>s+m.val,0);
+        realMap[norm(prog.prog)]=(realMap[norm(prog.prog)]||0)+prog.months.reduce((s,m)=>s+m.val,0);
       }
-      out+='  → correspondances colId prevue ↔ realMap:\n';
-      for(const [colId] of Object.entries(prevData._byColId)){
-        const key=norm(colId);
-        out+=`    norm("${colId}")="${key}"  →  realMap[key]=${realMap[key]!==undefined?realMap[key].toFixed(3):'ABSENT'}\n`;
+      out+='  → correspondances activité prévue ↔ réalisé:\n';
+      for(const [activNorm] of Object.entries(prevData._byActivite)){
+        out+=`    "${activNorm}"  →  realMap[key]=${realMap[activNorm]!==undefined?realMap[activNorm].toFixed(3):'ABSENT'}\n`;
       }
     }
   }
