@@ -308,8 +308,8 @@ const yearBreak=months=>{
 };
 
 // ── TEMPS PRÉVU / RESTANT ────────────────────────────────────────────────────
-// Normalisation souple pour la correspondance agent
-const norm=s=>s.toLowerCase().replace(/[_\s-]+/g,' ').trim();
+// Normalisation souple : "Giant_Leaps" == "giant leaps" == "Giant Leaps"
+const norm=s=>String(s).toLowerCase().replace(/[_\s\-]+/g,' ').trim();
 
 function getPrevue(agentName){
   if(!agentName) return null;
@@ -320,30 +320,34 @@ function getPrevue(agentName){
   return null;
 }
 
-// Calcule le réalisé par activité (colId) pour un agent
-function realiseParActivite(ag){
+// Calcule le réalisé par label normalisé pour un agent
+function realiseParLabel(ag){
   const map={};
   for(const prog of ag.programs){
+    const lbl=norm(prog.colId); // colId brut → label normalisé
     const total=prog.months.reduce((s,m)=>s+m.val,0);
-    map[prog.colId]=total;
+    map[lbl]=(map[lbl]||0)+total;
   }
   return map;
 }
 
 // Retourne le détail solde par activité + total
-// { items:[{colId, label, prevu, realise, solde}], totalPrevu, totalRealise, totalSolde }
+// { items:[{label, prevu, realise, solde}], totalPrevu, totalRealise, totalSolde }
 function resteDetail(ag){
   const prevData=getPrevue(ag.name);
   if(!prevData) return null;
-  const realMap=realiseParActivite(ag);
+  // realMap est indexé par label normalisé du colId de la table agent
+  const realMap=realiseParLabel(ag);
   const items=[];
   let totalPrevu=0, totalRealise=0;
 
   for(const [colId, prevu] of Object.entries(prevData._byColId)){
-    const realise=realMap[colId]||0;
+    // On cherche dans realMap avec le label normalisé du colId de Temps_prevue
+    const lbl=norm(colId);
+    const realise=realMap[lbl]||0;
     const solde=prevu-realise;
-    const label=colId.replace(/_/g,' ').trim();
-    items.push({colId, label, prevu, realise, solde});
+    const display=colId.replace(/_/g,' ').trim();
+    items.push({label:display, prevu, realise, solde});
     totalPrevu+=prevu;
     totalRealise+=realise;
   }
