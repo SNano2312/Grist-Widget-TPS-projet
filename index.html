@@ -75,6 +75,16 @@
   .bar-fill { height:100%; border-radius:2px; }
   .num { text-align:right; font-variant-numeric:tabular-nums; min-width:52px; }
 
+  /* REMAINING TIME BADGE */
+  .reste-badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:2px 8px; border-radius:20px; font-variant-numeric:tabular-nums; }
+  .reste-pos { background:#E6F4ED; color:#145C35; }
+  .reste-neg { background:#FEE2E2; color:#991B1B; }
+  .reste-zero { background:var(--surface2); color:var(--text3); }
+  .prevue-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px; padding:8px 10px; background:var(--surface2); border-radius:var(--radius-sm); font-size:11px; }
+  .prevue-item { display:flex; align-items:center; gap:4px; }
+  .prevue-lbl { color:var(--text3); }
+  .prevue-val { font-weight:600; font-variant-numeric:tabular-nums; }
+
   /* BUTTONS */
   .btn { display:inline-block; padding:7px 16px; background:var(--accent); color:#fff; border-radius:var(--radius-sm); font-size:12px; font-weight:600; cursor:pointer; border:none; }
   .btn:hover { opacity:.85; }
@@ -131,6 +141,7 @@ const S={
   openAgent:null,
   openTab:{},
   sortBy:'value',
+  prevue:{},        // { agentName: { activite: total, ... , _total: total } }
 };
 
 // ── GRIST INIT ───────────────────────────────────────────────────────────────
@@ -148,10 +159,47 @@ async function fetchAllTableIds(){
   catch(e){ S.allTables=[]; }
 }
 
+// ── LOAD TEMPS_PREVUE ────────────────────────────────────────────────────────
+async function loadPrevue(){
+  S.prevue = {};
+  try {
+    const data = await grist.docApi.fetchTable('Temps_prevue');
+    const colIds = Object.keys(data).filter(k=>k!=='id'&&k!=='manualSort');
+    if(!colIds.length) return;
+    const nRows = data[colIds[0]].length;
+
+    // Colonne A = noms agents (première colonne non-id)
+    const agentCol = colIds[0];
+    // Colonnes B+ = activités
+    const activCols = colIds.slice(1);
+
+    for(let i=0; i<nRows; i++){
+      const agentRaw = data[agentCol][i];
+      if(!agentRaw || typeof agentRaw !== 'string') continue;
+      const agentName = agentRaw.trim();
+      if(!agentName) continue;
+
+      let totalPrevue = 0;
+      const byActivite = {};
+      for(const col of activCols){
+        const val = data[col][i];
+        const num = (typeof val === 'number' && !isNaN(val)) ? val : 0;
+        const actName = col.replace(/_/g,' ').trim();
+        byActivite[actName] = num;
+        totalPrevue += num;
+      }
+      S.prevue[agentName] = { ...byActivite, _total: totalPrevue };
+    }
+  } catch(e) {
+    // Table optionnelle, on ignore si absente
+  }
+}
+
 // ── LOAD & PARSE ─────────────────────────────────────────────────────────────
 async function loadAll(){
   if(!S.tables.length){ await fetchAllTableIds(); return renderConfig(); }
   showLoading();
+  await loadPrevue();
   const agents=[], errs=[];
   for(const tid of S.tables){
     try{
@@ -252,6 +300,34 @@ const yearBreak=months=>{
   return m;
 };
 
+// ── TEMPS PRÉVU / RESTANT ────────────────────────────────────────────────────
+// Cherche la ligne prévue pour un agent (correspondance souple)
+function getPrevue(agentName){
+  if(!agentName) return null;
+  const norm=s=>s.toLowerCase().replace(/[_\s-]+/g,' ').trim();
+  const n=norm(agentName);
+  for(const [k,v] of Object.entries(S.prevue)){
+    if(norm(k)===n) return v;
+  }
+  return null;
+}
+
+// Retourne le solde (prévu - réalisé) : positif = il reste du temps, négatif = dépassement
+function resteTotal(ag){
+  const p=getPrevue(ag.name);
+  if(!p) return null;
+  const realise=agentTotal(ag, null);
+  return p._total - realise;
+}
+
+function resteBadge(solde){
+  if(solde===null) return '';
+  const absv=Math.abs(solde);
+  if(absv<0.001) return `<span class="reste-badge reste-zero">= 0 p/m</span>`;
+  if(solde>0) return `<span class="reste-badge reste-pos">▲ +${fmt(solde)} p/m restant</span>`;
+  return `<span class="reste-badge reste-neg">▼ ${fmt(solde)} p/m dépassé</span>`;
+}
+
 // ── RENDER DASHBOARD ─────────────────────────────────────────────────────────
 function render(){
   const gt=grandTotal(S.filter);
@@ -260,10 +336,19 @@ function render(){
   );
   const top=sorted[0];
 
+  // Stat carte solde global si Temps_prevue est renseignée
+  const hasPrevue=Object.keys(S.prevue).length>0;
+  let soldeTotalGlobal=null;
+  if(hasPrevue){
+    const totalPrevuGlobal=Object.values(S.prevue).reduce((s,p)=>s+p._total,0);
+    soldeTotalGlobal=totalPrevuGlobal - gt;
+  }
+
   const stats=`<div class="stats-row">
     <div class="stat-card"><div class="lbl">Total équipe</div><div class="val">${fmt(gt)}</div><div class="sub">personnes/mois</div></div>
     <div class="stat-card"><div class="lbl">Agents</div><div class="val">${S.agents.length}</div><div class="sub">${S.programs.length} programme${S.programs.length>1?'s':''}</div></div>
     <div class="stat-card"><div class="lbl">Top contributeur</div><div class="val" style="font-size:13px;padding-top:3px;font-weight:600">${esc(top.name)}</div><div class="sub">${fmt(agentTotal(top,S.filter))} p/m</div></div>
+    ${hasPrevue?`<div class="stat-card"><div class="lbl">Solde global</div><div class="val" style="font-size:16px;color:${soldeTotalGlobal>=0?'#1A7A4A':'#DC2626'}">${soldeTotalGlobal>=0?'+':''}${fmt(soldeTotalGlobal)}</div><div class="sub">p/m ${soldeTotalGlobal>=0?'restant':'dépassé'}</div></div>`:''}
   </div>`;
 
   const filters=`<div class="filter-bar">
@@ -286,6 +371,19 @@ function render(){
     const total=agentTotal(ag,S.filter);
     const pct=gt>0?Math.round(total/gt*100):0;
     const isOpen=S.openAgent===oi;
+    const solde=resteTotal(ag);
+    const badge=resteBadge(solde);
+    const prevData=getPrevue(ag.name);
+
+    let prevueDetail='';
+    if(prevData){
+      const realise=agentTotal(ag,null);
+      prevueDetail=`<div class="prevue-row">
+        <div class="prevue-item"><span class="prevue-lbl">Prévu :</span><span class="prevue-val">${fmt(prevData._total)} p/m</span></div>
+        <div class="prevue-item"><span class="prevue-lbl">Réalisé :</span><span class="prevue-val">${fmt(realise)} p/m</span></div>
+        <div class="prevue-item"><span class="prevue-lbl">Solde :</span>${badge}</div>
+      </div>`; 
+    }
 
     let detail='';
     if(isOpen){
@@ -318,10 +416,13 @@ function render(){
           <div style="text-align:right">
             <div class="agent-total" style="color:${c.fi}">${fmt(total)} <span style="font-size:10px;font-weight:400;color:var(--text2)">p/m</span></div>
             <div class="agent-pct">${pct}% du total</div>
+            ${badge?`<div style="margin-top:3px">${badge}</div>`:''}
           </div>
           <span class="chev${isOpen?' open':''}">▼</span>
         </div>
-      </div>${detail}
+      </div>
+      ${prevueDetail}
+      ${detail}
     </div>`;
   }).join('');
 
