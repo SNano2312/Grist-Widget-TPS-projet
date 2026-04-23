@@ -164,34 +164,41 @@ async function loadPrevue(){
   S.prevue = {};
   try {
     const data = await grist.docApi.fetchTable('Temps_prevue');
-    const colIds = Object.keys(data).filter(k=>k!=='id'&&k!=='manualSort');
+    // Grist renvoie les colonnes avec leurs vrais IDs (ex: "Giant_Leaps")
+    // On filtre id, manualSort, et toute colonne interne Grist (préfixe "gristHelper_")
+    const colIds = Object.keys(data).filter(k=>
+      k!=='id' && k!=='manualSort' && !k.startsWith('gristHelper_')
+    );
     if(!colIds.length) return;
     const nRows = data[colIds[0]].length;
 
-    // Colonne A = noms agents (première colonne non-id)
+    // Colonne A = noms agents (première colonne)
     const agentCol = colIds[0];
-    // Colonnes B+ = activités
+    // Colonnes B+ = activités (ID brut Grist → valeur prévue)
     const activCols = colIds.slice(1);
 
     for(let i=0; i<nRows; i++){
       const agentRaw = data[agentCol][i];
-      if(!agentRaw || typeof agentRaw !== 'string') continue;
-      const agentName = agentRaw.trim();
+      // Grist peut retourner null ou une string vide
+      if(!agentRaw) continue;
+      const agentName = String(agentRaw).trim();
       if(!agentName) continue;
 
       let totalPrevue = 0;
-      const byActivite = {};
+      // On stocke { [colIdBrut]: valeur } pour matcher directement avec parseTable
+      const byColId = {};
       for(const col of activCols){
-        const val = data[col][i];
-        const num = (typeof val === 'number' && !isNaN(val)) ? val : 0;
-        const actName = col.replace(/_/g,' ').trim();
-        byActivite[actName] = num;
+        const raw = data[col][i];
+        // Grist peut envoyer null, '', ou un nombre
+        const num = (raw !== null && raw !== '' && !isNaN(Number(raw))) ? Number(raw) : 0;
+        byColId[col] = num;
         totalPrevue += num;
       }
-      S.prevue[agentName] = { ...byActivite, _total: totalPrevue };
+      S.prevue[agentName] = { _byColId: byColId, _total: totalPrevue };
     }
   } catch(e) {
-    // Table optionnelle, on ignore si absente
+    // Table optionnelle — silence si absente
+    console.warn('Temps_prevue non trouvée ou erreur:', e);
   }
 }
 
@@ -268,7 +275,7 @@ function parseTable(tableId, data){
         months.push({date:d.trim(), val});
     }
     const prog = col.replace(/_/g,' ').trim();
-    return {prog, months};
+    return {prog, colId:col, months};  // colId = ID Grist brut, pour matcher Temps_prevue
   });
 
   // Build the merged "Total autres" program (autres activités + absence)
@@ -301,10 +308,11 @@ const yearBreak=months=>{
 };
 
 // ── TEMPS PRÉVU / RESTANT ────────────────────────────────────────────────────
-// Cherche la ligne prévue pour un agent (correspondance souple)
+// Normalisation souple pour la correspondance agent
+const norm=s=>s.toLowerCase().replace(/[_\s-]+/g,' ').trim();
+
 function getPrevue(agentName){
   if(!agentName) return null;
-  const norm=s=>s.toLowerCase().replace(/[_\s-]+/g,' ').trim();
   const n=norm(agentName);
   for(const [k,v] of Object.entries(S.prevue)){
     if(norm(k)===n) return v;
@@ -312,20 +320,41 @@ function getPrevue(agentName){
   return null;
 }
 
-// Retourne le solde (prévu - réalisé) : positif = il reste du temps, négatif = dépassement
-function resteTotal(ag){
-  const p=getPrevue(ag.name);
-  if(!p) return null;
-  const realise=agentTotal(ag, null);
-  return p._total - realise;
+// Calcule le réalisé par activité (colId) pour un agent
+function realiseParActivite(ag){
+  const map={};
+  for(const prog of ag.programs){
+    const total=prog.months.reduce((s,m)=>s+m.val,0);
+    map[prog.colId]=total;
+  }
+  return map;
 }
 
-function resteBadge(solde){
+// Retourne le détail solde par activité + total
+// { items:[{colId, label, prevu, realise, solde}], totalPrevu, totalRealise, totalSolde }
+function resteDetail(ag){
+  const prevData=getPrevue(ag.name);
+  if(!prevData) return null;
+  const realMap=realiseParActivite(ag);
+  const items=[];
+  let totalPrevu=0, totalRealise=0;
+
+  for(const [colId, prevu] of Object.entries(prevData._byColId)){
+    const realise=realMap[colId]||0;
+    const solde=prevu-realise;
+    const label=colId.replace(/_/g,' ').trim();
+    items.push({colId, label, prevu, realise, solde});
+    totalPrevu+=prevu;
+    totalRealise+=realise;
+  }
+  return {items, totalPrevu, totalRealise, totalSolde:totalPrevu-totalRealise};
+}
+
+function soldeBadge(solde){
   if(solde===null) return '';
-  const absv=Math.abs(solde);
-  if(absv<0.001) return `<span class="reste-badge reste-zero">= 0 p/m</span>`;
-  if(solde>0) return `<span class="reste-badge reste-pos">▲ +${fmt(solde)} p/m restant</span>`;
-  return `<span class="reste-badge reste-neg">▼ ${fmt(solde)} p/m dépassé</span>`;
+  if(Math.abs(solde)<0.0005) return `<span class="reste-badge reste-zero">= 0</span>`;
+  if(solde>0) return `<span class="reste-badge reste-pos">+${fmt(solde)}</span>`;
+  return `<span class="reste-badge reste-neg">${fmt(solde)}</span>`;
 }
 
 // ── RENDER DASHBOARD ─────────────────────────────────────────────────────────
@@ -340,8 +369,12 @@ function render(){
   const hasPrevue=Object.keys(S.prevue).length>0;
   let soldeTotalGlobal=null;
   if(hasPrevue){
-    const totalPrevuGlobal=Object.values(S.prevue).reduce((s,p)=>s+p._total,0);
-    soldeTotalGlobal=totalPrevuGlobal - gt;
+    let tp=0, tr=0;
+    for(const ag of S.agents){
+      const d=resteDetail(ag);
+      if(d){ tp+=d.totalPrevu; tr+=d.totalRealise; }
+    }
+    soldeTotalGlobal=tp-tr;
   }
 
   const stats=`<div class="stats-row">
@@ -371,18 +404,40 @@ function render(){
     const total=agentTotal(ag,S.filter);
     const pct=gt>0?Math.round(total/gt*100):0;
     const isOpen=S.openAgent===oi;
-    const solde=resteTotal(ag);
-    const badge=resteBadge(solde);
-    const prevData=getPrevue(ag.name);
+    const detail_prevue=resteDetail(ag);
 
+    // Badge solde global dans l'en-tête
+    const badgeHeader=detail_prevue
+      ? soldeBadge(detail_prevue.totalSolde)+` <span style="font-size:10px;font-weight:400;color:var(--text2)">p/m ${detail_prevue.totalSolde>=0?'restant':'dépassé'}</span>`
+      : '';
+
+    // Tableau détail prévu/réalisé/solde par activité (affiché hors du panneau dépliable)
     let prevueDetail='';
-    if(prevData){
-      const realise=agentTotal(ag,null);
-      prevueDetail=`<div class="prevue-row">
-        <div class="prevue-item"><span class="prevue-lbl">Prévu :</span><span class="prevue-val">${fmt(prevData._total)} p/m</span></div>
-        <div class="prevue-item"><span class="prevue-lbl">Réalisé :</span><span class="prevue-val">${fmt(realise)} p/m</span></div>
-        <div class="prevue-item"><span class="prevue-lbl">Solde :</span>${badge}</div>
-      </div>`; 
+    if(detail_prevue && detail_prevue.items.length){
+      const rows=detail_prevue.items.map(it=>`
+        <tr>
+          <td style="color:var(--text2)">${esc(it.label)}</td>
+          <td class="num" style="color:var(--text3)">${fmt(it.prevu)}</td>
+          <td class="num">${fmt(it.realise)}</td>
+          <td class="num">${soldeBadge(it.solde)}</td>
+        </tr>`).join('');
+      prevueDetail=`<div style="border-top:1px solid var(--border);padding:10px 13px;background:var(--surface2)">
+        <table class="mtable" style="font-size:11px">
+          <thead><tr>
+            <th>Activité</th>
+            <th class="num" style="text-align:right">Prévu</th>
+            <th class="num" style="text-align:right">Réalisé</th>
+            <th class="num" style="text-align:right">Solde</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+            <td>Total</td>
+            <td class="num" style="color:var(--text3)">${fmt(detail_prevue.totalPrevu)}</td>
+            <td class="num">${fmt(detail_prevue.totalRealise)}</td>
+            <td class="num">${soldeBadge(detail_prevue.totalSolde)}</td>
+          </tr></tfoot>
+        </table>
+      </div>`;
     }
 
     let detail='';
@@ -416,7 +471,7 @@ function render(){
           <div style="text-align:right">
             <div class="agent-total" style="color:${c.fi}">${fmt(total)} <span style="font-size:10px;font-weight:400;color:var(--text2)">p/m</span></div>
             <div class="agent-pct">${pct}% du total</div>
-            ${badge?`<div style="margin-top:3px">${badge}</div>`:''}
+            ${badgeHeader?`<div style="margin-top:3px">${badgeHeader}</div>`:''}
           </div>
           <span class="chev${isOpen?' open':''}">▼</span>
         </div>
