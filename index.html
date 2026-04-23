@@ -394,7 +394,9 @@ function render(){
     ${S.programs.length>1?`<span class="pill${!S.filter?' active':''}" onclick="setFilter(null)">Tous</span>`:''}
     <button class="icon-btn" style="margin-left:auto" onclick="loadAll()">⟳</button>
     <button class="icon-btn" onclick="openConfig()">⚙ Tables</button>
-  </div>`;
+    <button class="icon-btn" style="background:#FEF3C7;border-color:#D97706;color:#92400E" onclick="toggleDebug()">🔍 Debug</button>
+  </div>
+  <div id="debug-panel" style="display:none;background:#1A1916;color:#E2DFD8;font-family:monospace;font-size:11px;padding:12px;border-radius:8px;margin-bottom:12px;overflow-x:auto;white-space:pre"></div>`;
 
   const sortBar=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
     <span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Tri :</span>
@@ -545,6 +547,51 @@ function toggleAgent(i){ S.openAgent=S.openAgent===i?null:i; render(); }
 function setFilter(p){ S.filter=p; S.openAgent=null; render(); }
 function setSort(s){ S.sortBy=s; render(); }
 function setTab(ai,p){ S.openTab[ai]=p; render(); }
+
+function toggleDebug(){
+  const panel=document.getElementById('debug-panel');
+  if(!panel) return;
+  if(panel.style.display!=='none'){ panel.style.display='none'; return; }
+
+  let out='';
+
+  out+='══ TEMPS_PREVUE (S.prevue) ══\n';
+  for(const [agName, pData] of Object.entries(S.prevue)){
+    out+=`\nAgent: "${agName}" (normalisé: "${norm(agName)}")\n`;
+    out+=`  _total: ${pData._total}\n`;
+    out+='  colIds prévus:\n';
+    for(const [colId, val] of Object.entries(pData._byColId)){
+      out+=`    "${colId}"  →  norm="${norm(colId)}"  val=${val}\n`;
+    }
+  }
+
+  out+='\n══ AGENTS RÉALISÉS (S.agents) ══\n';
+  for(const ag of S.agents){
+    out+=`\nAgent: "${ag.name}" (normalisé: "${norm(ag.name)}")\n`;
+    out+=`  tableId: ${ag.tableId}\n`;
+    out+='  programmes (colId brut → norm → total réalisé):\n';
+    for(const prog of ag.programs){
+      const total=prog.months.reduce((s,m)=>s+m.val,0);
+      out+=`    colId="${prog.colId}"  prog="${prog.prog}"  norm="${norm(prog.colId)}"  total=${total.toFixed(3)}\n`;
+    }
+    const prevData=getPrevue(ag.name);
+    out+=`  → getPrevue: ${prevData?'TROUVÉ':'NON TROUVÉ'}\n`;
+    if(prevData){
+      const realMap={};
+      for(const prog of ag.programs){
+        realMap[norm(prog.colId)]=(realMap[norm(prog.colId)]||0)+prog.months.reduce((s,m)=>s+m.val,0);
+      }
+      out+='  → correspondances colId prevue ↔ realMap:\n';
+      for(const [colId] of Object.entries(prevData._byColId)){
+        const key=norm(colId);
+        out+=`    norm("${colId}")="${key}"  →  realMap[key]=${realMap[key]!==undefined?realMap[key].toFixed(3):'ABSENT'}\n`;
+      }
+    }
+  }
+
+  panel.textContent=out;
+  panel.style.display='block';
+}
 
 function showLoading(){
   document.getElementById('app').innerHTML=`<div class="state-box"><div class="ico">⏳</div><h2>Chargement…</h2><p>${S.tables.map(esc).join(', ')}</p></div>`;
